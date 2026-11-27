@@ -12,11 +12,9 @@ export default function AddFriend({ myCode, onDone, onCancel }: { myCode: string
     setErr("");
     if (code === myCode) return setErr("That's your own code.");
     setBusy(true);
-    const { data: u, error } = await supabase.from("users").select("id").eq("friend_code", code).maybeSingle();
-    if (error || !u) { setBusy(false); return setErr(error ? error.message : "Code not found"); }
-    const { data, error: e2 } = await supabase.rpc("create_conversation", { p_name: null, p_members: [u.id] });
+    const { data, error } = await supabase.rpc("add_friend_by_code", { p_code: code });
     setBusy(false);
-    if (e2) setErr(e2.message); else onDone(data as string);
+    if (error) setErr(error.message); else if (!data) setErr("Code not found"); else onDone(data as string);
   }
 
   return (
