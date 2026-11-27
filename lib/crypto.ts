@@ -2,7 +2,9 @@ import nacl from "tweetnacl";
 import { decodeBase64 as unb64, decodeUTF8, encodeBase64 as b64, encodeUTF8 } from "tweetnacl-util";
 
 export type FileMeta = { path: string; nonce: string; name: string; type: string; size: number };
-export type Payload = { text?: string; file?: FileMeta };
+// reply: the message being answered (a short copy, so it still reads if that message is far back).
+// react: an emoji on another message (empty emoji takes it back). Both travel encrypted like any message.
+export type Payload = { text?: string; file?: FileMeta; reply?: { id: string; who: string; text: string }; react?: { to: string; emoji: string } };
 export type Row = { ciphertext: string; nonce: string; keys: Record<string, { n: string; c: string }> };
 
 export function newKeyPair() {
