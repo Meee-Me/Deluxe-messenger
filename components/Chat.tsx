@@ -91,7 +91,7 @@ export default function Chat({ me }: { me: Me }) {
     return () => { live = false; supabase.removeChannel(ch); };
   }, [activeId, me.id, me.sec]);
 
-  useEffect(() => bottom.current?.scrollIntoView(), [msgs]);
+  useEffect(() => { bottom.current?.scrollIntoView(); }, [msgs]); // braces: newer browsers return a Promise, which React rejects as a cleanup
 
   async function send(e: FormEvent, file?: File) {
     e.preventDefault();
