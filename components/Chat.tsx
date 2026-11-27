@@ -6,14 +6,39 @@ import { supabase } from "@/lib/supabase";
 import { useCall } from "@/lib/useCall";
 import Attachment from "./Attachment";
 import CallOverlay from "./CallOverlay";
+import Brand, { Mark } from "./Brand";
 import NewChat from "./NewChat";
 
 type U = { id: string; username: string; public_key: string };
-type Conv = { id: string; name: string | null; is_group: boolean; participants: { user_id: string; users: U }[] };
+type Conv = { id: string; name: string | null; is_group: boolean; participants: { user_id: string; users: U }[]; messages?: { created_at: string }[] };
 type DbMsg = Row & { id: string; sender_id: string; created_at: string };
 type Msg = { id: string; sender: string; at: string; payload?: Payload; key?: Uint8Array };
 
 const MAX_FILE = 20 * 1024 * 1024;
+
+const P = {
+  updates: "M12 4.5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15zm0 5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z",
+  calls: "M5 4h4l1.5 4-2 1.5a11 11 0 0 0 5 5l1.5-2 4 1.5v4a2 2 0 0 1-2 2A15 15 0 0 1 3 6a2 2 0 0 1 2-2z",
+  chats: "M4 5.5h16v10.5H9.5L5 19.5V16H4z",
+  keys: "M8 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 12h9M18 12v3M15 12v2",
+  you: "M12 5.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM5 20c0-4 3-6 7-6s7 2 7 6",
+  video: "M4.5 6h10a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 3 16.5v-9A1.5 1.5 0 0 1 4.5 6zM16 10l5-3v10l-5-3",
+  clip: "M20 11l-8 8a5 5 0 0 1-7-7l9-9a3.5 3.5 0 0 1 5 5l-9 9a2 2 0 0 1-3-3l8-8",
+  plus: "M12 5v14M5 12h14",
+};
+const NAV = [["Updates", P.updates], ["Calls", P.calls], ["Chats", P.chats], ["Keys", P.keys], ["You", P.you]] as const;
+const Icon = ({ d }: { d: string }) => <svg className="i" viewBox="0 0 24 24" aria-hidden="true"><path d={d} /></svg>;
+
+// hand-picked tints, not a generated hue wheel
+const TINTS = ["#7c3aed", "#9d4edd", "#5b2a9e", "#0e9f6e", "#2bb673", "#b56cf2"];
+function Avatar({ name, group, size = 44 }: { name: string; group: boolean; size?: number }) {
+  const t = TINTS[[...name].reduce((a, c) => a + c.charCodeAt(0), 0) % TINTS.length];
+  return <span className={`av ${group ? "sq" : ""}`} style={{ width: size, height: size, background: `linear-gradient(150deg, ${t}, #24103f 135%)` }}>{name.slice(0, 1).toUpperCase()}</span>;
+}
+const fmt = (iso: string) => {
+  const d = new Date(iso);
+  return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : d.toLocaleDateString([], { month: "short", day: "numeric" });
+};
 
 export default function Chat({ me }: { me: Me }) {
   const [convs, setConvs] = useState<Conv[]>([]);
@@ -33,15 +58,18 @@ export default function Chat({ me }: { me: Me }) {
 
   const loadConvs = useCallback(async () => {
     const { data } = await supabase.from("conversations")
-      .select("id,name,is_group,participants(user_id,users(id,username,public_key))")
-      .order("created_at", { ascending: false });
-    setConvs((data ?? []) as unknown as Conv[]);
+      .select("id,name,is_group,participants(user_id,users(id,username,public_key)),messages(created_at)")
+      .order("created_at", { referencedTable: "messages", ascending: false })
+      .limit(1, { referencedTable: "messages" });
+    const last = (c: Conv) => c.messages?.[0]?.created_at ?? "";
+    setConvs(((data ?? []) as unknown as Conv[]).sort((a, b) => last(b).localeCompare(last(a))));
   }, []);
 
   useEffect(() => {
     loadConvs();
     const ch = supabase.channel("my-participations")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "participants", filter: `user_id=eq.${me.id}` }, loadConvs)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, loadConvs) // keeps order and times fresh; RLS limits it to my chats
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [me.id, loadConvs]);
@@ -93,27 +121,48 @@ export default function Chat({ me }: { me: Me }) {
 
   return (
     <div className="app">
+      <nav className="rail" aria-label="Main">
+        <Mark size={34} />
+        {NAV.map(([label, d]) => (
+          <button key={label} aria-current={label === "Chats"} disabled={label !== "Chats"} onClick={() => setActiveId(undefined)} title={label === "Chats" ? label : `${label} (coming soon)`}>
+            <Icon d={d} /><span>{label}</span>
+          </button>
+        ))}
+      </nav>
+
       <aside>
         <header>
-          <strong>{me.username}</strong>
-          <button className="link" onClick={() => supabase.auth.signOut()}>Sign out</button>
+          <h2>Chats</h2>
+          <button className="icon" onClick={() => setCreating(true)} aria-label="New chat"><Icon d={P.plus} /></button>
         </header>
-        <button onClick={() => setCreating(true)}>+ New chat</button>
-        {convs.map((c) => (
-          <div key={c.id} className={`conv ${c.id === activeId ? "on" : ""}`} onClick={() => setActiveId(c.id)}>
-            {c.is_group ? "👥 " : ""}{title(c)}
-          </div>
-        ))}
+        <div className="list">
+          {convs.map((c) => (
+            <button key={c.id} className="conv" aria-current={c.id === activeId} onClick={() => setActiveId(c.id)}>
+              <Avatar name={title(c)} group={c.is_group} />
+              <span className="who"><b>{title(c)}</b><span>{c.is_group ? `${c.participants.length} members` : "Direct message"}</span></span>
+              {c.messages?.[0] && <time>{fmt(c.messages[0].created_at)}</time>}
+            </button>
+          ))}
+          {!convs.length && <p className="empty">No chats yet.</p>}
+        </div>
+        <footer><span>{me.username}</span><button className="link" onClick={() => supabase.auth.signOut()}>Sign out</button></footer>
       </aside>
 
       <main>
-        {!active ? <p className="empty">Select or start a chat.</p> : (
+        {!active ? (
+          <div className="blank">
+            <Brand size={60} />
+            <p>End-to-end encrypted</p>
+            <button className="cta" onClick={() => setCreating(true)}>Start a chat</button>
+          </div>
+        ) : (
           <>
             <header>
+              <Avatar name={title(active)} group={active.is_group} size={38} />
               <strong>{title(active)}</strong>
               {peer && <span>
-                <button onClick={() => start(peer.id, peer.username, false)} title="Voice call">📞</button>
-                <button onClick={() => start(peer.id, peer.username, true)} title="Video call">🎥</button>
+                <button className="icon" onClick={() => start(peer.id, peer.username, false)} title="Voice call" aria-label="Voice call"><Icon d={P.calls} /></button>
+                <button className="icon" onClick={() => start(peer.id, peer.username, true)} title="Video call" aria-label="Video call"><Icon d={P.video} /></button>
               </span>}
             </header>
             <div className="msgs">
@@ -130,11 +179,11 @@ export default function Chat({ me }: { me: Me }) {
             </div>
             {err && <p className="err">{err}</p>}
             <form className="composer" onSubmit={send}>
-              <label className="attach">📎
+              <label className="icon attach" title="Attach a file"><Icon d={P.clip} />
                 <input type="file" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) send(e as unknown as FormEvent, f); }} />
               </label>
-              <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Message (end-to-end encrypted)" />
-              <button>Send</button>
+              <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Message" aria-label="Message" />
+              <button className="send">Send</button>
             </form>
           </>
         )}

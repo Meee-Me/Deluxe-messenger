@@ -1,6 +1,7 @@
 "use client";
 import { FormEvent, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import Brand from "./Brand";
 
 export default function Auth() {
   const [signup, setSignup] = useState(false);
@@ -19,7 +20,7 @@ export default function Auth() {
 
   return (
     <form className="auth" onSubmit={submit}>
-      <h1>Deluxe Messenger</h1>
+      <Brand size={48} />
       {signup && <input name="username" placeholder="Username" minLength={2} maxLength={32} required />}
       <input name="email" type="email" placeholder="Email" required />
       <input name="password" type="password" placeholder="Password" minLength={6} required />
