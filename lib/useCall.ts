@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "./supabase";
 
 type Sig = { type: "offer" | "answer" | "ice" | "hangup"; from: string; name?: string; video?: boolean; sdp?: RTCSessionDescriptionInit; ice?: RTCIceCandidateInit };
-export type CallState = { status: "idle" | "incoming" | "calling" | "active"; peerName?: string; video?: boolean; local?: MediaStream; remote?: MediaStream };
+export type CallState = { status: "idle" | "incoming" | "calling" | "active"; peerId?: string; peerName?: string; video?: boolean; local?: MediaStream; remote?: MediaStream };
 
 // shortcut: STUN only (fails behind symmetric NAT), 1-on-1 only; add a TURN server / SFU for groups.
 const ICE = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
@@ -58,7 +58,7 @@ export function useCall(meId: string, meName: string) {
   const start = useCallback(async (to: string, toName: string, video: boolean) => {
     if (peer.current) return;
     peer.current = to;
-    setCall({ status: "calling", peerName: toName, video });
+    setCall({ status: "calling", peerId: to, peerName: toName, video });
     try {
       const p = await connect(to, video);
       await p.setLocalDescription(await p.createOffer());
@@ -84,7 +84,7 @@ export function useCall(meId: string, meName: string) {
       if (s.type === "offer") {
         if (peer.current) return send(s.from, { type: "hangup" }); // busy
         peer.current = s.from; offer.current = s.sdp!;
-        setCall({ status: "incoming", peerName: s.name, video: s.video });
+        setCall({ status: "incoming", peerId: s.from, peerName: s.name, video: s.video });
       } else if (s.from !== peer.current) return;
       else if (s.type === "hangup") end(false);
       else if (s.type === "answer") {

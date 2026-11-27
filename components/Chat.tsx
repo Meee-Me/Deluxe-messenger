@@ -1,51 +1,30 @@
 "use client";
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
-import { encryptBytes, FileMeta, newMessageKey, open, Payload, Row, seal } from "@/lib/crypto";
+import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { encryptBytes, FileMeta, newMessageKey, open, Payload, publicFromSecret, seal } from "@/lib/crypto";
 import type { Me } from "@/lib/identity";
+import { acceptNewKey, markVerified, safety as safetyOf, trust as trustOf } from "@/lib/safety";
 import { supabase } from "@/lib/supabase";
 import { useCall } from "@/lib/useCall";
-import Attachment from "./Attachment";
-import CallOverlay from "./CallOverlay";
-import Brand, { Mark } from "./Brand";
 import AddFriend from "./AddFriend";
+import Avatar, { tintOf } from "./Avatar";
+import Bubble, { Reaction } from "./Bubble";
+import Brand, { Mark } from "./Brand";
+import CallOverlay from "./CallOverlay";
+import { Icon, NAV, P } from "./icons";
+import InfoPane from "./InfoPane";
 import NewChat from "./NewChat";
-
-type U = { id: string; username: string; public_key: string; avatar_url: string | null };
-type Conv = { id: string; name: string | null; is_group: boolean; participants: { user_id: string; users: U }[]; messages?: { created_at: string }[] };
-type DbMsg = Row & { id: string; sender_id: string; created_at: string };
-type Msg = { id: string; sender: string; at: string; payload?: Payload; key?: Uint8Array };
+import type { Conv, DbMsg, Msg } from "./types";
 
 const MAX_FILE = 20 * 1024 * 1024;
 
-const P = {
-  updates: "M12 4.5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15zm0 5a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z",
-  calls: "M5 4h4l1.5 4-2 1.5a11 11 0 0 0 5 5l1.5-2 4 1.5v4a2 2 0 0 1-2 2A15 15 0 0 1 3 6a2 2 0 0 1 2-2z",
-  chats: "M4 5.5h16v10.5H9.5L5 19.5V16H4z",
-  keys: "M8 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM12 12h9M18 12v3M15 12v2",
-  you: "M12 5.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM5 20c0-4 3-6 7-6s7 2 7 6",
-  video: "M4.5 6h10a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 3 16.5v-9A1.5 1.5 0 0 1 4.5 6zM16 10l5-3v10l-5-3",
-  clip: "M20 11l-8 8a5 5 0 0 1-7-7l9-9a3.5 3.5 0 0 1 5 5l-9 9a2 2 0 0 1-3-3l8-8",
-  plus: "M12 5v14M5 12h14",
-  userPlus: "M9 5.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM2.500 20c0-3.600 2.700-5.500 6.500-5.500s6.500 1.900 6.500 5.500M19 8v6M16 11h6",
-  copy: "M9 9h10v10H9zM5 15V5h10",
-  check: "M5 12.5l4.5 4.5L19 7.5",
-};
-const NAV = [["Updates", P.updates], ["Calls", P.calls], ["Chats", P.chats], ["Keys", P.keys], ["You", P.you]] as const;
-const Icon = ({ d }: { d: string }) => <svg className="i" viewBox="0 0 24 24" aria-hidden="true"><path d={d} /></svg>;
-
-// hand-picked tints, not a generated hue wheel
-const TINTS = ["#7c3aed", "#9d4edd", "#5b2a9e", "#0e9f6e", "#2bb673", "#b56cf2"];
-function Avatar({ name, group, size = 44, src }: { name: string; group: boolean; size?: number; src?: string | null }) {
-  const t = TINTS[[...name].reduce((a, c) => a + c.charCodeAt(0), 0) % TINTS.length];
-  return (
-    <span className={`av ${group ? "sq" : ""}`} style={{ width: size, height: size, background: `linear-gradient(150deg, ${t}, #24103f 135%)` }}>
-      {src ? <img src={src} alt="" referrerPolicy="no-referrer" /> : name.slice(0, 1).toUpperCase()}
-    </span>
-  );
-}
 const fmt = (iso: string) => {
   const d = new Date(iso);
   return d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : d.toLocaleDateString([], { month: "short", day: "numeric" });
+};
+const dayLabel = (iso: string) => {
+  const d = new Date(iso), today = new Date(), yest = new Date(Date.now() - 864e5);
+  return d.toDateString() === today.toDateString() ? "Today" : d.toDateString() === yest.toDateString() ? "Yesterday"
+    : d.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric", ...(d.getFullYear() !== today.getFullYear() && { year: "numeric" }) });
 };
 
 export default function Chat({ me }: { me: Me }) {
@@ -53,18 +32,24 @@ export default function Chat({ me }: { me: Me }) {
   const [activeId, setActiveId] = useState<string>();
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
+  const [replyTo, setReplyTo] = useState<Payload["reply"] | null>(null);
+  const [whisper, setWhisper] = useState(false);
+  const [info, setInfo] = useState(false);
+  const [trustTick, setTrustTick] = useState(0);
   const [creating, setCreating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [copied, setCopied] = useState(false);
   const [err, setErr] = useState("");
-  const bottom = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLDivElement>(null);
   const { call, start, accept, end } = useCall(me.id, me.username);
+  const myPub = useMemo(() => publicFromSecret(me.sec), [me.sec]);
 
   const active = convs.find((c) => c.id === activeId);
   const activeRef = useRef(active);
   activeRef.current = active;
   const peerOf = (c: Conv) => c.participants.find((p) => p.user_id !== me.id)?.users;
   const title = (c: Conv) => c.name ?? (c.is_group ? "Group" : peerOf(c)?.username ?? "Chat");
+  const peer = active && !active.is_group ? peerOf(active) : undefined;
 
   const loadConvs = useCallback(async () => {
     const { data } = await supabase.from("conversations")
@@ -87,30 +72,51 @@ export default function Chat({ me }: { me: Me }) {
   useEffect(() => {
     if (!activeId) return;
     let live = true;
-    setMsgs([]);
-    const dec = (r: DbMsg): Msg => {
+    setMsgs([]); setReplyTo(null); setWhisper(false);
+    const dec = (r: DbMsg, fresh = false): Msg => {
       const pub = activeRef.current?.participants.find((p) => p.user_id === r.sender_id)?.users.public_key ?? "";
-      return { id: r.id, sender: r.sender_id, at: r.created_at, ...open(r, me.id, me.sec, pub) };
+      return { id: r.id, sender: r.sender_id, at: r.created_at, once: r.once, burned: !!r.burned_at, fresh, ...open(r, me.id, me.sec, pub) };
     };
     supabase.from("messages").select("*").eq("conversation_id", activeId).order("created_at").limit(200)
-      .then(({ data }) => live && setMsgs(((data ?? []) as DbMsg[]).map(dec)));
+      .then(({ data }) => live && setMsgs(((data ?? []) as DbMsg[]).map((r) => dec(r))));
     const ch = supabase.channel(`msgs:${activeId}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `conversation_id=eq.${activeId}` },
-        (p) => setMsgs((m) => (m.some((x) => x.id === p.new.id) ? m : [...m, dec(p.new as DbMsg)])))
+        (p) => { const r = p.new as DbMsg; setMsgs((m) => (m.some((x) => x.id === r.id) ? m : [...m, dec(r, r.sender_id === me.id)])); })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "messages", filter: `conversation_id=eq.${activeId}` },
+        (p) => { const r = p.new as DbMsg; setMsgs((m) => m.map((x) => (x.id === r.id ? dec(r) : x))); }) // a whisper was opened
       .subscribe();
     return () => { live = false; supabase.removeChannel(ch); };
   }, [activeId, me.id, me.sec]);
 
-  useEffect(() => { bottom.current?.scrollIntoView(); }, [msgs]); // braces: newer browsers return a Promise, which React rejects as a cleanup
+  // Reactions travel as small encrypted messages; fold them onto the message they point at.
+  const { visible, reactionsOf } = useMemo(() => {
+    const byTarget = new Map<string, Map<string, string>>();
+    const visible: Msg[] = [];
+    for (const m of msgs) {
+      const r = m.payload?.react;
+      if (!r) { visible.push(m); continue; }
+      if (!byTarget.has(r.to)) byTarget.set(r.to, new Map());
+      byTarget.get(r.to)!.set(m.sender, r.emoji); // each person's latest reaction wins
+    }
+    const reactionsOf = (id: string): Reaction[] => {
+      const counts = new Map<string, Reaction>();
+      for (const [who, emoji] of byTarget.get(id) ?? []) {
+        if (!emoji) continue;
+        const c = counts.get(emoji) ?? { emoji, count: 0, mine: false };
+        c.count++; c.mine ||= who === me.id; counts.set(emoji, c);
+      }
+      return [...counts.values()];
+    };
+    return { visible, reactionsOf };
+  }, [msgs, me.id]);
 
-  async function send(e: FormEvent, file?: File) {
-    e.preventDefault();
-    if (!active || (!text.trim() && !file)) return;
+  useEffect(() => { const el = scroller.current; if (el) el.scrollTop = el.scrollHeight; }, [visible.length, activeId]);
+
+  async function post(payload: Payload, { file, once = false }: { file?: File; once?: boolean } = {}) {
+    if (!active) return false;
     setErr("");
     try {
       const key = newMessageKey();
-      const payload: Payload = {};
-      if (text.trim()) payload.text = text.trim();
       if (file) {
         if (file.size > MAX_FILE) throw new Error("File too large (20 MB max).");
         const enc = encryptBytes(new Uint8Array(await file.arrayBuffer()), key);
@@ -120,12 +126,35 @@ export default function Chat({ me }: { me: Me }) {
         payload.file = { path, nonce: enc.nonce, name: file.name, type: file.type || "application/octet-stream", size: file.size } satisfies FileMeta;
       }
       const recipients = Object.fromEntries(active.participants.map((p) => [p.user_id, p.users.public_key]));
-      const { error } = await supabase.from("messages").insert({ conversation_id: active.id, sender_id: me.id, ...seal(payload, key, recipients, me.sec) });
+      const { error } = await supabase.from("messages").insert({ conversation_id: active.id, sender_id: me.id, once, ...seal(payload, key, recipients, me.sec) });
       if (error) throw error;
-      setText("");
-    } catch (x) { setErr((x as Error).message); }
+      return true;
+    } catch (x) { setErr((x as Error).message); return false; }
   }
 
+  async function send(e: FormEvent) {
+    e.preventDefault();
+    const t = text.trim();
+    if (!t) return;
+    const payload: Payload = { text: t };
+    if (replyTo && !whisper) payload.reply = replyTo;
+    if (await post(payload, { once: whisper && !!peer })) { setText(""); setReplyTo(null); setWhisper(false); }
+  }
+
+  const name = (id: string) => (id === me.id ? "You" : active?.participants.find((p) => p.user_id === id)?.users.username ?? "?");
+  const reply = (m: Msg) => setReplyTo({ id: m.id, who: name(m.sender), text: (m.payload?.text ?? (m.payload?.file ? `File: ${m.payload.file.name}` : "")).slice(0, 90) });
+  const react = (m: Msg, emoji: string) => { post({ react: { to: m.id, emoji } }); };
+  async function opened(m: Msg) {
+    const { error } = await supabase.rpc("burn_message", { p_id: m.id });
+    if (error) setErr(error.message);
+    else setMsgs((all) => all.map((x) => (x.id === m.id ? { ...x, burned: true, payload: undefined, key: undefined } : x)));
+  }
+  function jump(id: string) {
+    const el = document.getElementById(`m-${id}`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 1400);
+  }
   function copyCode() {
     navigator.clipboard.writeText(me.friendCode).then(
       () => { setCopied(true); setTimeout(() => setCopied(false), 1500); },
@@ -133,11 +162,16 @@ export default function Chat({ me }: { me: Me }) {
     );
   }
 
-  const name = (id: string) => active?.participants.find((p) => p.user_id === id)?.users.username ?? "?";
-  const peer = active && !active.is_group ? peerOf(active) : undefined;
+  const safety = useMemo(() => (peer ? safetyOf(myPub, peer.public_key) : null), [myPub, peer]);
+  const trust = useMemo(() => (peer ? trustOf(me.id, peer.id, peer.public_key) : null), [me.id, peer, trustTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  const verifiedPeers = useMemo(() => new Set(convs.filter((c) => !c.is_group).map((c) => ({ c, p: peerOf(c) })).filter(({ p }) => p && trustOf(me.id, p.id, p.public_key).verified).map(({ c }) => c.id)), [convs, me.id, trustTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  const callPeer = call.peerId ? convs.flatMap((c) => c.participants).find((p) => p.user_id === call.peerId)?.users : undefined;
+  const callSafety = callPeer ? safetyOf(myPub, callPeer.public_key) : null;
+  const callVerified = callPeer ? trustOf(me.id, callPeer.id, callPeer.public_key).verified : false;
 
+  let prevDay = "", prevSender = "";
   return (
-    <div className="app">
+    <div className={`app${info && active ? " has-info" : ""}${active ? " in-chat" : ""}`}>
       <nav className="rail" aria-label="Main">
         <Mark size={34} />
         {NAV.map(([label, d]) => (
@@ -147,7 +181,7 @@ export default function Chat({ me }: { me: Me }) {
         ))}
       </nav>
 
-      <aside>
+      <aside className="side">
         <header>
           <h2>Chats</h2>
           <span>
@@ -158,12 +192,12 @@ export default function Chat({ me }: { me: Me }) {
         <div className="list">
           {convs.map((c) => (
             <button key={c.id} className="conv" aria-current={c.id === activeId} onClick={() => setActiveId(c.id)}>
-              <Avatar name={title(c)} group={c.is_group} src={c.is_group ? null : peerOf(c)?.avatar_url} />
-              <span className="who"><b>{title(c)}</b><span>{c.is_group ? `${c.participants.length} members` : "Direct message"}</span></span>
+              <Avatar name={title(c)} group={c.is_group} src={c.is_group ? null : peerOf(c)?.avatar_url} ring={verifiedPeers.has(c.id)} />
+              <span className="who"><b>{title(c)}</b><span>{c.is_group ? `${c.participants.length} members` : verifiedPeers.has(c.id) ? "Verified" : "Direct message"}</span></span>
               {c.messages?.[0] && <time>{fmt(c.messages[0].created_at)}</time>}
             </button>
           ))}
-          {!convs.length && <p className="empty">No chats yet.</p>}
+          {!convs.length && <p className="empty">No chats yet. Add a friend with their code.</p>}
         </div>
         <footer>
           <Avatar name={me.username} group={false} size={36} src={me.avatarUrl} />
@@ -182,47 +216,83 @@ export default function Chat({ me }: { me: Me }) {
           <div className="blank">
             <Brand size={60} />
             <p>End-to-end encrypted</p>
-            <button className="cta" onClick={() => setCreating(true)}>Start a chat</button>
+            <button className="cta" onClick={() => setAdding(true)}>Add a friend</button>
           </div>
         ) : (
           <>
-            <header>
-              <Avatar name={title(active)} group={active.is_group} size={38} src={active.is_group ? null : peer?.avatar_url} />
-              <strong>{title(active)}</strong>
-              {peer && <span>
+            <header className="thead">
+              <button className="icon back" onClick={() => setActiveId(undefined)} aria-label="Back to chats"><Icon d={P.back} /></button>
+              <Avatar name={title(active)} group={active.is_group} size={40} src={peer?.avatar_url} ring={trust?.verified} />
+              <button className="who-btn" onClick={() => setInfo(!info)} aria-label="Contact info">
+                <strong>{title(active)}</strong>
+                <span className={trust?.verified ? "ok" : ""}>{active.is_group ? `${active.participants.length} members` : trust?.verified ? "Verified, end-to-end encrypted" : "End-to-end encrypted"}</span>
+              </button>
+              {peer && <>
                 <button className="icon" onClick={() => start(peer.id, peer.username, false)} title="Voice call" aria-label="Voice call"><Icon d={P.calls} /></button>
                 <button className="icon" onClick={() => start(peer.id, peer.username, true)} title="Video call" aria-label="Video call"><Icon d={P.video} /></button>
-              </span>}
+              </>}
+              <button className="icon info-btn" onClick={() => setInfo(!info)} aria-label="Contact info" aria-pressed={info} title="Contact info"><Icon d={P.info} /></button>
             </header>
-            <div className="msgs">
-              {msgs.map((m) => (
-                <div key={m.id} className={`msg ${m.sender === me.id ? "mine" : ""}`}>
-                  <small>{m.sender === me.id ? "You" : name(m.sender)} · {new Date(m.at).toLocaleTimeString()}</small>
-                  {!m.payload ? <em>🔒 can't decrypt this message</em> : <>
-                    {m.payload.text && <p>{m.payload.text}</p>}
-                    {m.payload.file && <Attachment file={m.payload.file} k={m.key!} />}
-                  </>}
-                </div>
-              ))}
-              <div ref={bottom} />
+
+            {trust?.changed && peer && (
+              <div className="banner" role="alert"><Icon d={P.shieldAlert} />
+                <span>{peer.username}'s key changed. They may have a new device. Compare your safety number again.</span>
+                <button onClick={() => setInfo(true)}>Review</button>
+              </div>
+            )}
+
+            <div className="msgs" ref={scroller}>
+              <p className="lockline"><Icon d={P.lock} />Messages and calls here are end-to-end encrypted.</p>
+              {visible.map((m) => {
+                const day = dayLabel(m.at), showDay = day !== prevDay, first = showDay || m.sender !== prevSender;
+                prevDay = day; prevSender = m.sender;
+                return (
+                  <Fragment key={m.id}>
+                    {showDay && <div className="sep">{day}</div>}
+                    <Bubble m={m} mine={m.sender === me.id} first={first} group={active.is_group} who={name(m.sender)} tint={tintOf(name(m.sender))}
+                      reactions={reactionsOf(m.id)} onReply={reply} onReact={react} onOpened={opened} onJump={jump} />
+                  </Fragment>
+                );
+              })}
             </div>
-            {err && <p className="err">{err}</p>}
-            <form className="composer" onSubmit={send}>
-              <label className="icon attach" title="Attach a file"><Icon d={P.clip} />
-                <input type="file" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) send(e as unknown as FormEvent, f); }} />
-              </label>
-              <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Message" aria-label="Message" />
-              <button className="send">Send</button>
-            </form>
+
+            {err && <p className="err" role="alert">{err}</p>}
+            <div className={`composer${whisper ? " whisper" : ""}`}>
+              {replyTo && !whisper && (
+                <div className="replybar"><span><b>{replyTo.who}</b> {replyTo.text || "Attachment"}</span>
+                  <button className="icon" onClick={() => setReplyTo(null)} aria-label="Cancel reply"><Icon d={P.x} /></button></div>
+              )}
+              <form onSubmit={send}>
+                {!whisper && (
+                  <label className="icon attach" title="Attach a file"><Icon d={P.clip} />
+                    <input type="file" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) post({}, { file: f }); }} />
+                  </label>
+                )}
+                {peer && (
+                  <button type="button" className={`icon whisper-btn${whisper ? " on" : ""}`} aria-pressed={whisper} onClick={() => setWhisper(!whisper)}
+                    title="Whisper: read once, then gone" aria-label="Whisper: read once, then gone"><Icon d={P.ghost} /></button>
+                )}
+                <input value={text} onChange={(e) => setText(e.target.value)} placeholder={whisper ? "Write a whisper" : "Message"} aria-label="Message" />
+                <button className="send">{whisper ? "Seal it" : "Send"}</button>
+              </form>
+              {whisper && peer && <p className="whisper-note">{peer.username} holds to read it once. When they let go, it's gone for both of you.</p>}
+            </div>
           </>
         )}
       </main>
+
+      {info && active && (
+        <InfoPane conv={active} title={title(active)} peer={peer} safety={safety} trust={trust} meName={me.username}
+          onVerify={() => { if (peer) { markVerified(me.id, peer.id, peer.public_key); setTrustTick((t) => t + 1); } }}
+          onAcceptKey={() => { if (peer) { acceptNewKey(me.id, peer.id, peer.public_key); setTrustTick((t) => t + 1); } }}
+          onCall={(video) => peer && start(peer.id, peer.username, video)} onClose={() => setInfo(false)} />
+      )}
 
       {adding && <AddFriend myCode={me.friendCode} onCancel={() => setAdding(false)}
         onDone={async (id) => { await loadConvs(); setActiveId(id); setAdding(false); }} />}
       {creating && <NewChat meId={me.id} onCancel={() => setCreating(false)}
         onDone={async (id) => { await loadConvs(); setActiveId(id); setCreating(false); }} />}
-      <CallOverlay call={call} accept={accept} end={end} />
+      <CallOverlay call={call} accept={accept} end={end} safety={callSafety} verified={callVerified} />
     </div>
   );
 }
