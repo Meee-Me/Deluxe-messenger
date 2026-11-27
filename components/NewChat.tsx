@@ -4,7 +4,7 @@ import { supabase } from "@/lib/supabase";
 
 type U = { id: string; username: string };
 
-// shortcut: lists every user (fine for a small deployment); add username search when the directory grows.
+// Lists only people you already share a chat with (the database hides everyone else); add new people with a friend code.
 export default function NewChat({ meId, onDone, onCancel }: { meId: string; onDone: (id: string) => void; onCancel: () => void }) {
   const [users, setUsers] = useState<U[]>([]);
   const [picked, setPicked] = useState<string[]>([]);
@@ -32,7 +32,7 @@ export default function NewChat({ meId, onDone, onCancel }: { meId: string; onDo
             {u.username}
           </label>
         ))}
-        {!users.length && <em>No other users yet.</em>}
+        {!users.length && <em>No friends yet. Add someone with their friend code first.</em>}
       </div>
       {picked.length > 1 && <input placeholder="Group name" value={name} onChange={(e) => setName(e.target.value)} />}
       {err && <p className="err">{err}</p>}
