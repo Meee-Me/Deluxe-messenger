@@ -20,6 +20,12 @@ Import the repo in Vercel, set the two `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBL
 - **Whisper:** in a 1-on-1 chat, tap the ghost button to send a message that stays sealed until the other person holds it. When they let go it is wiped for both of you (the server clears the ciphertext, see `burn_message` in migration 0009) and a tombstone stays. It is a promise between two people, not a lock: a recipient can still screenshot it.
 - **Safety number:** a picture and six number groups made from both people's public keys, the same on both screens. Compare them, tick "Verified", and the avatar gets a green ring. If that person's key ever changes, a banner asks you to check again. Verification is remembered in this browser only.
 
+## Calls
+Voice and video calls use one screen modelled on Deluxe Meet: a dark stage with a tile for each person (their avatar when there is no video), a ring around whoever is speaking, a timer, mute and camera buttons that show on the other person's tile, a safety-number button, and a wide red leave button. It stacks the two tiles on a phone. Calls are 1-on-1, peer to peer, STUN only, and the other person must have the app open.
+
+## On a phone
+The layout switches to one screen at a time with a bottom tab bar, safe-area spacing for notches, and 44px touch targets. The app has a web manifest and icons, so it can be added to the home screen and opens full screen. There is no service worker yet, so it does not work offline and cannot send push notifications.
+
 ## How E2EE works
 - Each user gets a NaCl box keypair in the browser; the public key is in `users`, the secret key stays in `localStorage`.
 - Each message gets a random secretbox key that encrypts the text and any file; that key is boxed to every participant (`messages.keys`). The server stores only ciphertext. Files are encrypted before upload to the private `attachments` bucket.

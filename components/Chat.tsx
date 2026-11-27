@@ -41,7 +41,7 @@ export default function Chat({ me }: { me: Me }) {
   const [copied, setCopied] = useState(false);
   const [err, setErr] = useState("");
   const scroller = useRef<HTMLDivElement>(null);
-  const { call, start, accept, end } = useCall(me.id, me.username);
+  const { call, start, accept, end, toggle, notice } = useCall(me.id, me.username);
   const myPub = useMemo(() => publicFromSecret(me.sec), [me.sec]);
 
   const active = convs.find((c) => c.id === activeId);
@@ -292,7 +292,9 @@ export default function Chat({ me }: { me: Me }) {
         onDone={async (id) => { await loadConvs(); setActiveId(id); setAdding(false); }} />}
       {creating && <NewChat meId={me.id} onCancel={() => setCreating(false)}
         onDone={async (id) => { await loadConvs(); setActiveId(id); setCreating(false); }} />}
-      <CallOverlay call={call} accept={accept} end={end} safety={callSafety} verified={callVerified} />
+      {notice && <p className="err callerr" role="alert">{notice}</p>}
+      <CallOverlay call={call} accept={accept} end={end} toggle={toggle} safety={callSafety} verified={callVerified} meName={me.username} meAvatar={me.avatarUrl} peerAvatar={callPeer?.avatar_url}
+        onVerify={() => { if (callPeer) { markVerified(me.id, callPeer.id, callPeer.public_key); setTrustTick((t) => t + 1); } }} />
     </div>
   );
 }
