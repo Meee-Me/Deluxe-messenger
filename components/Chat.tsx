@@ -7,9 +7,10 @@ import { useCall } from "@/lib/useCall";
 import Attachment from "./Attachment";
 import CallOverlay from "./CallOverlay";
 import Brand, { Mark } from "./Brand";
+import AddFriend from "./AddFriend";
 import NewChat from "./NewChat";
 
-type U = { id: string; username: string; public_key: string };
+type U = { id: string; username: string; public_key: string; avatar_url: string | null };
 type Conv = { id: string; name: string | null; is_group: boolean; participants: { user_id: string; users: U }[]; messages?: { created_at: string }[] };
 type DbMsg = Row & { id: string; sender_id: string; created_at: string };
 type Msg = { id: string; sender: string; at: string; payload?: Payload; key?: Uint8Array };
@@ -25,15 +26,22 @@ const P = {
   video: "M4.5 6h10a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 3 16.5v-9A1.5 1.5 0 0 1 4.5 6zM16 10l5-3v10l-5-3",
   clip: "M20 11l-8 8a5 5 0 0 1-7-7l9-9a3.5 3.5 0 0 1 5 5l-9 9a2 2 0 0 1-3-3l8-8",
   plus: "M12 5v14M5 12h14",
+  userPlus: "M9 5.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM2.500 20c0-3.600 2.700-5.500 6.500-5.500s6.500 1.900 6.500 5.500M19 8v6M16 11h6",
+  copy: "M9 9h10v10H9zM5 15V5h10",
+  check: "M5 12.5l4.5 4.5L19 7.5",
 };
 const NAV = [["Updates", P.updates], ["Calls", P.calls], ["Chats", P.chats], ["Keys", P.keys], ["You", P.you]] as const;
 const Icon = ({ d }: { d: string }) => <svg className="i" viewBox="0 0 24 24" aria-hidden="true"><path d={d} /></svg>;
 
 // hand-picked tints, not a generated hue wheel
 const TINTS = ["#7c3aed", "#9d4edd", "#5b2a9e", "#0e9f6e", "#2bb673", "#b56cf2"];
-function Avatar({ name, group, size = 44 }: { name: string; group: boolean; size?: number }) {
+function Avatar({ name, group, size = 44, src }: { name: string; group: boolean; size?: number; src?: string | null }) {
   const t = TINTS[[...name].reduce((a, c) => a + c.charCodeAt(0), 0) % TINTS.length];
-  return <span className={`av ${group ? "sq" : ""}`} style={{ width: size, height: size, background: `linear-gradient(150deg, ${t}, #24103f 135%)` }}>{name.slice(0, 1).toUpperCase()}</span>;
+  return (
+    <span className={`av ${group ? "sq" : ""}`} style={{ width: size, height: size, background: `linear-gradient(150deg, ${t}, #24103f 135%)` }}>
+      {src ? <img src={src} alt="" referrerPolicy="no-referrer" /> : name.slice(0, 1).toUpperCase()}
+    </span>
+  );
 }
 const fmt = (iso: string) => {
   const d = new Date(iso);
@@ -46,6 +54,8 @@ export default function Chat({ me }: { me: Me }) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [text, setText] = useState("");
   const [creating, setCreating] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [err, setErr] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
   const { call, start, accept, end } = useCall(me.id, me.username);
@@ -58,7 +68,7 @@ export default function Chat({ me }: { me: Me }) {
 
   const loadConvs = useCallback(async () => {
     const { data } = await supabase.from("conversations")
-      .select("id,name,is_group,participants(user_id,users(id,username,public_key)),messages(created_at)")
+      .select("id,name,is_group,participants(user_id,users(id,username,public_key,avatar_url)),messages(created_at)")
       .order("created_at", { referencedTable: "messages", ascending: false })
       .limit(1, { referencedTable: "messages" });
     const last = (c: Conv) => c.messages?.[0]?.created_at ?? "";
@@ -116,6 +126,13 @@ export default function Chat({ me }: { me: Me }) {
     } catch (x) { setErr((x as Error).message); }
   }
 
+  function copyCode() {
+    navigator.clipboard.writeText(me.friendCode).then(
+      () => { setCopied(true); setTimeout(() => setCopied(false), 1500); },
+      () => window.prompt("Your friend code", me.friendCode), // clipboard blocked: let them copy by hand
+    );
+  }
+
   const name = (id: string) => active?.participants.find((p) => p.user_id === id)?.users.username ?? "?";
   const peer = active && !active.is_group ? peerOf(active) : undefined;
 
@@ -133,19 +150,31 @@ export default function Chat({ me }: { me: Me }) {
       <aside>
         <header>
           <h2>Chats</h2>
-          <button className="icon" onClick={() => setCreating(true)} aria-label="New chat"><Icon d={P.plus} /></button>
+          <span>
+            <button className="icon" onClick={() => setAdding(true)} aria-label="Add via Friend Code" title="Add via Friend Code"><Icon d={P.userPlus} /></button>
+            <button className="icon" onClick={() => setCreating(true)} aria-label="New chat" title="New chat or group"><Icon d={P.plus} /></button>
+          </span>
         </header>
         <div className="list">
           {convs.map((c) => (
             <button key={c.id} className="conv" aria-current={c.id === activeId} onClick={() => setActiveId(c.id)}>
-              <Avatar name={title(c)} group={c.is_group} />
+              <Avatar name={title(c)} group={c.is_group} src={c.is_group ? null : peerOf(c)?.avatar_url} />
               <span className="who"><b>{title(c)}</b><span>{c.is_group ? `${c.participants.length} members` : "Direct message"}</span></span>
               {c.messages?.[0] && <time>{fmt(c.messages[0].created_at)}</time>}
             </button>
           ))}
           {!convs.length && <p className="empty">No chats yet.</p>}
         </div>
-        <footer><span>{me.username}</span><button className="link" onClick={() => supabase.auth.signOut()}>Sign out</button></footer>
+        <footer>
+          <Avatar name={me.username} group={false} size={36} src={me.avatarUrl} />
+          <span className="me">
+            <b>{me.username}</b>
+            <button className="code" onClick={copyCode} aria-label={`Copy your friend code, ${me.friendCode}`} title="Copy your friend code">
+              Your Code: <strong>{me.friendCode}</strong><Icon d={copied ? P.check : P.copy} />
+            </button>
+          </span>
+          <button className="link" onClick={() => supabase.auth.signOut()}>Sign out</button>
+        </footer>
       </aside>
 
       <main>
@@ -158,7 +187,7 @@ export default function Chat({ me }: { me: Me }) {
         ) : (
           <>
             <header>
-              <Avatar name={title(active)} group={active.is_group} size={38} />
+              <Avatar name={title(active)} group={active.is_group} size={38} src={active.is_group ? null : peer?.avatar_url} />
               <strong>{title(active)}</strong>
               {peer && <span>
                 <button className="icon" onClick={() => start(peer.id, peer.username, false)} title="Voice call" aria-label="Voice call"><Icon d={P.calls} /></button>
@@ -189,6 +218,8 @@ export default function Chat({ me }: { me: Me }) {
         )}
       </main>
 
+      {adding && <AddFriend myCode={me.friendCode} onCancel={() => setAdding(false)}
+        onDone={async (id) => { await loadConvs(); setActiveId(id); setAdding(false); }} />}
       {creating && <NewChat meId={me.id} onCancel={() => setCreating(false)}
         onDone={async (id) => { await loadConvs(); setActiveId(id); setCreating(false); }} />}
       <CallOverlay call={call} accept={accept} end={end} />
