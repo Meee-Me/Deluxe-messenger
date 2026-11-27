@@ -5,7 +5,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "tsx lib/crypto.test.ts"
+    "test": "tsx lib/crypto.test.ts && tsx supabase/functions/deluxe-signin/handler.test.mts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2",

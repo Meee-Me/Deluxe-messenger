@@ -1,11 +1,8 @@
 "use client";
-import type { Provider } from "@supabase/supabase-js";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
+import { finishDeluxeSignIn, startDeluxeSignIn } from "@/lib/deluxe";
 import { supabase } from "@/lib/supabase";
 import Brand from "./Brand";
-
-// Supabase requires the `custom:` prefix on custom OAuth/OIDC provider identifiers.
-const DELUXE_MAIN = "custom:deluxe_main" as Provider;
 
 export default function Auth() {
   const [step, setStep] = useState<"main" | "number" | "code">("main");
@@ -13,11 +10,12 @@ export default function Auth() {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
-  async function viaMain() {
-    setMsg(""); setBusy(true);
-    const { error } = await supabase.auth.signInWithOAuth({ provider: DELUXE_MAIN, options: { redirectTo: window.location.origin } });
-    if (error) { setMsg(error.message); setBusy(false); } // on success the browser is already leaving for Deluxe Main
-  }
+  // Coming back from Deluxe Main with a one-use code in the URL.
+  useEffect(() => {
+    if (!location.hash.includes("deluxe_code=")) return;
+    setBusy(true);
+    finishDeluxeSignIn().then((result) => { if (result) setMsg(result); setBusy(false); });
+  }, []);
 
   async function sendCode(e: FormEvent) {
     e.preventDefault();
@@ -41,7 +39,7 @@ export default function Auth() {
     <div className="auth">
       <Brand size={52} />
       {step === "main" && <>
-        <button className="neon" onClick={viaMain} disabled={busy}>Sign in with Deluxe Main</button>
+        <button className="neon" onClick={startDeluxeSignIn} disabled={busy}>{busy ? "Signing you in…" : "Sign in with Deluxe Main"}</button>
         <button className="ghost" onClick={() => { setMsg(""); setStep("number"); }}>Continue with Phone Number</button>
       </>}
       {step === "number" && (
